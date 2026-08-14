@@ -117,13 +117,22 @@ function rowToFeatures(row: LotRow): ProcessFeatures {
 }
 
 /** Process on `lots` + scores on `analysis_lots` + residual on `judgment_lots`. */
-const LOT_SELECT = `SELECT l.id AS lot_id, l.\`timestamp\` AS recorded_at,
-  l.d50, l.d90, l.metal_impurity, l.lithium_input,
-  l.additive_ratio, l.process_time, l.sintering_temp, l.humidity, l.tank_pressure, l.operator_id,
+const LOT_SELECT = `SELECT l.id AS lot_id, COALESCE(s.produced_at, l.\`timestamp\`) AS recorded_at,
+  COALESCE(s.d50, l.d50) AS d50,
+  COALESCE(s.d90, l.d90) AS d90,
+  COALESCE(s.metal_impurity, l.metal_impurity) AS metal_impurity,
+  COALESCE(s.lithium_input, l.lithium_input) AS lithium_input,
+  COALESCE(s.additive_ratio, l.additive_ratio) AS additive_ratio,
+  COALESCE(s.process_time, l.process_time) AS process_time,
+  COALESCE(s.sintering_temp, l.sintering_temp) AS sintering_temp,
+  COALESCE(s.humidity, l.humidity) AS humidity,
+  COALESCE(s.tank_pressure, l.tank_pressure) AS tank_pressure,
+  COALESCE(s.operator_id, l.operator_id) AS operator_id,
   0 AS quality_defect, j.residual_li AS residual_lithium,
   COALESCE(j.probability, a.probability) AS probability,
   a.spc_status, a.risk_level, a.risk_reason
   FROM lots l
+  LEFT JOIN SPC_LOT s ON s.lot_id = l.id
   LEFT JOIN analysis_lots a ON a.lot_id = l.id
   LEFT JOIN judgment_lots j ON j.lot_id = l.id`
 
@@ -154,8 +163,9 @@ export async function getDailyProbabilityKpi(): Promise<DailyProbabilityKpi> {
        SUM(CASE WHEN a.probability >= ? THEN 1 ELSE 0 END) AS defect_count,
        SUM(CASE WHEN a.probability <  ? THEN 1 ELSE 0 END) AS good_count
      FROM lots l
+     LEFT JOIN SPC_LOT s ON s.lot_id = l.id
      INNER JOIN analysis_lots a ON a.lot_id = l.id
-     WHERE l.\`timestamp\` >= CURDATE()
+     WHERE COALESCE(s.produced_at, l.\`timestamp\`) >= CURDATE()
        AND a.probability IS NOT NULL`,
     [thr, thr],
   )
@@ -247,9 +257,10 @@ export async function getQCostSummary(opts: {
        SUM(CASE WHEN a.risk_level = '주의' THEN 1 ELSE 0 END) AS warning_count,
        SUM(CASE WHEN a.risk_level = '심각' THEN 1 ELSE 0 END) AS critical_count
      FROM lots l
+     LEFT JOIN SPC_LOT s ON s.lot_id = l.id
      INNER JOIN analysis_lots a ON a.lot_id = l.id
-     WHERE l.\`timestamp\` >= ?
-       AND l.\`timestamp\` < ?`,
+     WHERE COALESCE(s.produced_at, l.\`timestamp\`) >= ?
+       AND COALESCE(s.produced_at, l.\`timestamp\`) < ?`,
     [fromStr, toExclusiveStr],
   )
 
@@ -257,9 +268,10 @@ export async function getQCostSummary(opts: {
     `SELECT COUNT(*) AS c
      FROM judgment_lots j
      INNER JOIN lots l ON l.id = j.lot_id
+     LEFT JOIN SPC_LOT s ON s.lot_id = l.id
      WHERE j.quality_defect = 1
-       AND l.\`timestamp\` >= ?
-       AND l.\`timestamp\` < ?`,
+       AND COALESCE(s.produced_at, l.\`timestamp\`) >= ?
+       AND COALESCE(s.produced_at, l.\`timestamp\`) < ?`,
     [fromStr, toExclusiveStr],
   )
 
@@ -281,6 +293,7 @@ export async function getQCostSummary(opts: {
   const internalCost = internalDefectCount * Q_COST_INTERNAL_UNIT
   const externalCost = externalLeakCount * Q_COST_EXTERNAL_UNIT
   const preventionCost = Q_COST_PREVENTION
+  const totalQCost = appraisalCost + internalCost + externalCost + preventionCost
 
   return {
     from: fromStr,
@@ -295,7 +308,7 @@ export async function getQCostSummary(opts: {
     internalCost,
     externalCost,
     preventionCost,
-    totalQCost: appraisalCost + internalCost + externalCost + preventionCost,
+    totalQCost,
   }
 }
 
@@ -308,7 +321,7 @@ export type RiskTopResult = {
 }
 
 export const RISK_TOP_WHERE = `a.risk_level = '심각'
-  AND l.\`timestamp\` >= DATE_SUB(NOW(), INTERVAL 3 DAY)`
+  AND COALESCE(s.produced_at, l.\`timestamp\`) >= DATE_SUB(NOW(), INTERVAL 3 DAY)`
 
 /** Recent 3 days · risk_level 심각 — paginated for Main 「위험 LOT Top」. */
 export async function getRiskTop(opts: {
@@ -321,6 +334,7 @@ export async function getRiskTop(opts: {
   const countRows = await query<{ c: number }[]>(
     `SELECT COUNT(*) AS c
      FROM lots l
+     LEFT JOIN SPC_LOT s ON s.lot_id = l.id
      INNER JOIN analysis_lots a ON a.lot_id = l.id
      WHERE ${RISK_TOP_WHERE}`,
   )
@@ -335,7 +349,7 @@ export async function getRiskTop(opts: {
       : await query<LotRow[]>(
         `${LOT_SELECT}
            WHERE ${RISK_TOP_WHERE}
-           ORDER BY l.\`timestamp\` DESC
+           ORDER BY COALESCE(s.produced_at, l.\`timestamp\`) DESC
            LIMIT ? OFFSET ?`,
         [pageSize, offset],
       )

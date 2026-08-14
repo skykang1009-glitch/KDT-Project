@@ -24,10 +24,11 @@ async function main() {
   const top = await query<{ lot_id: string }[]>(
     `SELECT DISTINCT l.id AS lot_id
      FROM lots l
+     LEFT JOIN SPC_LOT s ON s.lot_id = l.id
      INNER JOIN analysis_lots a ON a.lot_id = l.id
      INNER JOIN issues i ON i.lot_id = l.id AND i.completed_at IS NULL
      WHERE ${RISK_TOP_WHERE}
-     ORDER BY l.\`timestamp\` DESC
+     ORDER BY COALESCE(s.produced_at, l.\`timestamp\`) DESC
      LIMIT 1`,
   )
   let lotId = top[0]?.lot_id
